@@ -49,13 +49,12 @@
 
 extern uint8_t motorCount;
 uint32_t targetPidLooptime;
-extern float setpointRate[3];
+extern float setpointRate[3], ptermSetpointRate[3];
 extern float rcInput[3];
 
 static bool pidStabilisationEnabled;
 
 int16_t axisPID[3];
-static int16_t axisKD[3];
 
 #ifdef BLACKBOX
 int32_t axisPID_P[3], axisPID_I[3], axisPID_D[3];
@@ -68,14 +67,13 @@ static int32_t errorGyroI[3];
 static float errorGyroIf[3];
 
 static void pidLegacy(const pidProfile_t *pidProfile, uint16_t max_angle_inclination,
-const rollAndPitchTrims_t *angleTrim, const rxConfig_t *rxConfig);
-
+        const rollAndPitchTrims_t *angleTrim, const rxConfig_t *rxConfig);
 #ifdef SKIP_PID_FLOAT
-	pidControllerFuncPtr pid_controller = pidLegacy; // which pid controller are we using
+pidControllerFuncPtr pid_controller = pidLegacy; // which pid controller are we using
 #else
-	static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inclination,
-	const rollAndPitchTrims_t *angleTrim, const rxConfig_t *rxConfig);
-	pidControllerFuncPtr pid_controller = pidBetaflight; // which pid controller are we using
+static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inclination,
+        const rollAndPitchTrims_t *angleTrim, const rxConfig_t *rxConfig);
+pidControllerFuncPtr pid_controller = pidBetaflight; // which pid controller are we using
 #endif
 
 void setTargetPidLooptime(uint32_t pidLooptime)
@@ -99,8 +97,7 @@ void pidStabilisationState(pidStabilisationState_e pidControllerState)
 float getdT (void)
 {
     static float dT;
-    //if (!dT) dT = (float)targetPidLooptime * 0.000001f;
-    if (!dT) dT = (float)targetPidLooptime * 0.00000095f;
+    if (!dT) dT = (float)targetPidLooptime * 0.000001f;
 
     return dT;
 }
@@ -138,7 +135,7 @@ static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inc
     float errorRate = 0, rP = 0, rD = 0, PVRate = 0;
     float ITerm,PTerm,DTerm;
     static float lastRateError[2];
-    static float Kp[3], Ki[3], Kd[3], b[3], c[3], rollPitchMaxVelocity, yawMaxVelocity, previousSetpoint[3];
+    static float Kp[3], Ki[3], Kd[3], c[3], rollPitchMaxVelocity, yawMaxVelocity, previousSetpoint[3];
     float delta;
     int axis;
     float horizonLevelStrength = 1;
@@ -190,7 +187,6 @@ static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inc
             Kp[axis] = PTERM_SCALE * pidProfile->P8[axis];
             Ki[axis] = ITERM_SCALE * pidProfile->I8[axis];
             Kd[axis] = DTERM_SCALE * pidProfile->D8[axis];
-            b[axis] = pidProfile->ptermSetpointWeight / 100.0f;
             c[axis] = pidProfile->dtermSetpointWeight / 100.0f;
             yawMaxVelocity = pidProfile->yawRateAccelLimit * 1000 * getdT();
             rollPitchMaxVelocity = pidProfile->rateAccelLimit * 1000 * getdT();
@@ -222,11 +218,11 @@ static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inc
 #endif
             if (FLIGHT_MODE(ANGLE_MODE)) {
                 // ANGLE mode - control is angle based, so control loop is needed
-                setpointRate[axis] = errorAngle * pidProfile->P8[PIDLEVEL] / 10.0f;
+                ptermSetpointRate[axis] = setpointRate[axis] = errorAngle * pidProfile->P8[PIDLEVEL] / 10.0f;
             } else {
                 // HORIZON mode - direct sticks control is applied to rate PID
                 // mix up angle error to desired AngleRate to add a little auto-level feel
-                setpointRate[axis] = setpointRate[axis] + (errorAngle * pidProfile->I8[PIDLEVEL] * horizonLevelStrength / 10.0f);
+                ptermSetpointRate[axis] = setpointRate[axis] = setpointRate[axis] + (errorAngle * pidProfile->I8[PIDLEVEL] * horizonLevelStrength / 10.0f);
             }
         }
 
@@ -237,42 +233,10 @@ static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inc
         // Used in stand-alone mode for ACRO, controlled by higher level regulators in other modes
         // ----- calculate error / angle rates  ----------
         errorRate = setpointRate[axis] - PVRate;       // r - y
-        rP = b[axis] * setpointRate[axis] - PVRate;    // br - y
-
-        // Slowly restore original setpoint with more stick input
-        float diffRate = errorRate - rP;
-        rP += diffRate * rcInput[axis];
-
-        // Reduce Hunting effect and jittering near setpoint. Limit multiple zero crossing within deadband and lower PID affect during low error amount
-        float dynReduction = tpaFactor;
-        if (pidProfile->toleranceBand) {
-            const float minReduction = (float)pidProfile->toleranceBandReduction / 100.0f;
-            static uint8_t zeroCrossCount[3];
-            static uint8_t currentErrorPolarity[3];
-            if (ABS(errorRate) < pidProfile->toleranceBand) {
-                if (zeroCrossCount[axis]) {
-                    if (currentErrorPolarity[axis] == POSITIVE_ERROR) {
-                        if (errorRate < 0 ) {
-                            zeroCrossCount[axis]--;
-                            currentErrorPolarity[axis] = NEGATIVE_ERROR;
-                        }
-                    } else {
-                        if (errorRate > 0 ) {
-                            zeroCrossCount[axis]--;
-                            currentErrorPolarity[axis] = POSITIVE_ERROR;
-                        }
-                    }
-                } else {
-                    dynReduction *= constrainf(ABS(errorRate) / pidProfile->toleranceBand, minReduction, 1.0f);
-                }
-            } else {
-                zeroCrossCount[axis] =  pidProfile->zeroCrossAllowanceCount;
-                currentErrorPolarity[axis] = (errorRate > 0) ? POSITIVE_ERROR : NEGATIVE_ERROR;
-            }
-        }
+        rP = ptermSetpointRate[axis] - PVRate;         // br - y
 
         // -----calculate P component
-        PTerm = Kp[axis] * rP * dynReduction;
+        PTerm = Kp[axis] * rP * tpaFactor;
 
         // -----calculate I component.
         // Reduce strong Iterm accumulation during higher stick inputs
@@ -289,13 +253,7 @@ static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inc
         ITerm = errorGyroIf[axis];
 
         //-----calculate D-term (Yaw D not yet supported)
-        if (axis == YAW) {
-            if (pidProfile->yaw_lpf_hz) PTerm = pt1FilterApply4(&yawFilter, PTerm, pidProfile->yaw_lpf_hz, getdT());
-
-            axisPID[axis] = lrintf(PTerm + ITerm);
-
-            DTerm = 0.0f; // needed for blackbox
-        } else {
+        if (axis != YAW) {
             rD = c[axis] * setpointRate[axis] - PVRate;    // cr - y
             delta = rD - lastRateError[axis];
             lastRateError[axis] = rD;
@@ -303,7 +261,7 @@ static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inc
             // Divide delta by targetLooptime to get differential (ie dr/dt)
             delta *= (1.0f / getdT());
 
-            if (debugMode == DEBUG_DTERM_FILTER) debug[axis] = Kd[axis] * delta * dynReduction;
+            if (debugMode == DEBUG_DTERM_FILTER) debug[axis] = Kd[axis] * delta * tpaFactor;
 
             // Filter delta
             if (dtermNotchInitialised) delta = biquadFilterApply(&dtermFilterNotch[axis], delta);
@@ -316,10 +274,16 @@ static void pidBetaflight(const pidProfile_t *pidProfile, uint16_t max_angle_inc
                 }
             }
 
-            DTerm = Kd[axis] * delta * dynReduction;
+            DTerm = Kd[axis] * delta * tpaFactor;
 
             // -----calculate total PID output
             axisPID[axis] = constrain(lrintf(PTerm + ITerm + DTerm), -900, 900);
+        } else {
+            if (pidProfile->yaw_lpf_hz) PTerm = pt1FilterApply4(&yawFilter, PTerm, pidProfile->yaw_lpf_hz, getdT());
+
+            axisPID[axis] = lrintf(PTerm + ITerm);
+
+            DTerm = 0.0f; // needed for blackbox
         }
 
         // Disable PID control at zero throttle
@@ -425,33 +389,7 @@ static void pidLegacy(const pidProfile_t *pidProfile, uint16_t max_angle_inclina
         ITerm = errorGyroI[axis] >> 13;
 
         //-----calculate D-term
-        if (axis == YAW) {
-            if (pidProfile->yaw_lpf_hz) PTerm = pt1FilterApply4(&yawFilter, PTerm, pidProfile->yaw_lpf_hz, getdT());
-
-            delta = RateError - lastRateError[axis];
-            lastRateError[axis] = RateError;
-
-            DTerm = (delta * PIDweight[axis] / 100) >> 8;
-            if (axisKD[axis]!=0){
-            	if (axisKD[axis]<DTerm)
-            		axisKD[axis]++;
-            	else
-            		axisKD[axis]--;
-            }
-			else
-            	axisKD[axis]=DTerm;
-
-            DTerm = axisKD[axis];
-
-            axisPID[axis] = PTerm + ITerm + DTerm;
-
-            if (motorCount >= 4) {
-                // prevent "yaw jump" during yaw correction
-                int16_t yaw_jump_prevention_limit = constrain(YAW_JUMP_PREVENTION_LIMIT_HIGH - (pidProfile->D8[axis] << 3), YAW_JUMP_PREVENTION_LIMIT_LOW, YAW_JUMP_PREVENTION_LIMIT_HIGH);
-                axisPID[YAW] = constrain(axisPID[YAW], -yaw_jump_prevention_limit - ABS(rcCommand[YAW]), yaw_jump_prevention_limit + ABS(rcCommand[YAW]));
-            }
-
-        } else {
+        if (axis != YAW) {
             if (pidProfile->deltaMethod == DELTA_FROM_ERROR) {
                 delta = RateError - lastRateError[axis];
                 lastRateError[axis] = RateError;
@@ -477,19 +415,22 @@ static void pidLegacy(const pidProfile_t *pidProfile, uint16_t max_angle_inclina
             }
 
             DTerm = (delta * pidProfile->D8[axis] * PIDweight[axis] / 100) >> 8;
-            if (axisKD[axis]!=0){
-            	if (axisKD[axis]<DTerm)
-            		axisKD[axis]++;
-            	else
-            		axisKD[axis]--;
-            }
-			else
-            	axisKD[axis]=DTerm;
-
-            DTerm = axisKD[axis];
 
             // -----calculate total PID output
             axisPID[axis] = PTerm + ITerm + DTerm;
+        } else {
+            if (pidProfile->yaw_lpf_hz) PTerm = pt1FilterApply4(&yawFilter, PTerm, pidProfile->yaw_lpf_hz, getdT());
+
+            axisPID[axis] = PTerm + ITerm;
+
+            if (motorCount >= 4) {
+                int16_t yaw_jump_prevention_limit = constrain(YAW_JUMP_PREVENTION_LIMIT_HIGH - (pidProfile->D8[axis] << 3), YAW_JUMP_PREVENTION_LIMIT_LOW, YAW_JUMP_PREVENTION_LIMIT_HIGH);
+
+                // prevent "yaw jump" during yaw correction
+                axisPID[YAW] = constrain(axisPID[YAW], -yaw_jump_prevention_limit - ABS(rcCommand[YAW]), yaw_jump_prevention_limit + ABS(rcCommand[YAW]));
+            }
+
+            DTerm = 0; // needed for blackbox
         }
 
         if (!pidStabilisationEnabled) axisPID[axis] = 0;
