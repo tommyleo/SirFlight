@@ -22,6 +22,8 @@
 #include "common/filter.h"
 #include "common/maths.h"
 
+#include "debug.h"
+
 #define M_LN2_FLOAT 0.69314718055994530942f
 #define M_PI_FLOAT  3.14159265358979323846f
 
@@ -38,12 +40,14 @@ void pt1FilterInit(pt1Filter_t *filter, uint8_t f_cut, float dT)
 
 float pt1FilterApply(pt1Filter_t *filter, float input)
 {
+	debug[0]=111;
     filter->state = filter->state + filter->dT / (filter->RC + filter->dT) * (input - filter->state);
     return filter->state;
 }
 
 float pt1FilterApply4(pt1Filter_t *filter, float input, uint8_t f_cut, float dT)
 {
+	debug[1]=112;
     // Pre calculate and store RC
     if (!filter->RC) {
         filter->RC = 1.0f / ( 2.0f * M_PI_FLOAT * f_cut );
@@ -109,6 +113,7 @@ void biquadFilterInit(biquadFilter_t *filter, float filterFreq, uint32_t refresh
 /* Computes a biquad_t filter on a sample */
 float biquadFilterApply(biquadFilter_t *filter, float input)
 {
+	debug[2]=113;
     const float result = filter->b0 * input + filter->d1;
     filter->d1 = filter->b1 * input - filter->a1 * result + filter->d2;
     filter->d2 = filter->b2 * input - filter->a2 * result;
@@ -118,6 +123,8 @@ float biquadFilterApply(biquadFilter_t *filter, float input)
 int32_t filterApplyAverage(int32_t input, uint8_t averageCount, int32_t averageState[DELTA_MAX_SAMPLES]) {
     int count;
     int32_t averageSum = 0;
+
+    debug[3]=114;
 
     for (count = averageCount-1; count > 0; count--) averageState[count] = averageState[count-1];
     averageState[0] = input;

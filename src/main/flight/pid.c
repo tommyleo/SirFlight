@@ -117,12 +117,15 @@ void initFilters(const pidProfile_t *pidProfile) {
         float notchQ = filterGetNotchQ(pidProfile->dterm_notch_hz, pidProfile->dterm_notch_cutoff);
         for (axis = 0; axis < 3; axis++) biquadFilterInit(&dtermFilterNotch[axis], pidProfile->dterm_notch_hz, targetPidLooptime, notchQ, FILTER_NOTCH);
         dtermNotchInitialised = true;
+        //debug[0]=11;
     }
 
     if (pidProfile->dterm_filter_type == FILTER_BIQUAD) {
         if (pidProfile->dterm_lpf_hz && !dtermBiquadLpfInitialised) {
             for (axis = 0; axis < 3; axis++) biquadFilterInitLPF(&dtermFilterLpf[axis], pidProfile->dterm_lpf_hz, targetPidLooptime);
             dtermBiquadLpfInitialised = true;
+            //debug[0]=12;
+            //debug[1]=pidProfile->dterm_lpf_hz;
         }
     }
 }
